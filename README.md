@@ -4,6 +4,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)](#安装)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
   <img src="docs/screenshot.png" alt="diskshow 扫描 C:\Users\Administrator：上方嵌套树图，下方可滚动子项列表" width="100%">
@@ -79,4 +80,4 @@ diskshow C:\Users
 
 ## 许可
 
-尚未指定开源许可证。公开发布前请先补充 `LICENSE`。
+[MIT](LICENSE) © 2026 shengsheng
