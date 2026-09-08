@@ -1,0 +1,9 @@
+/diskshow
+/diskshow.exe
+/dist/
+*.exe
+*.test
+*.out
+.idea/
+.vscode/
+*.log
