@@ -135,25 +135,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.moveSelection(1)
 	case "left", "h":
-		if m.mode == modeList {
-			m.goUp()
-		} else {
-			m.moveSelection(-1)
-		}
+		m.goUp()
 	case "right", "l":
-		if m.mode == modeList {
-			m.enterSelected()
-		} else {
-			m.moveSelection(1)
-		}
-	case "pgup":
-		m.moveSelection(-pageSize(m.mapHeight()))
-	case "pgdown":
-		m.moveSelection(pageSize(m.mapHeight()))
+		m.enterSelected()
+	case "pgup", "ctrl+u":
+		m.scrollList(-m.listPageSize())
+	case "pgdown", "ctrl+d":
+		m.scrollList(m.listPageSize())
 	case "home":
 		m.selectIndex(0)
 	case "end":
-		kids := m.navChildren()
+		kids := sortedChildren(m.current)
 		m.selectIndex(len(kids) - 1)
 	}
 	return m, nil
@@ -165,11 +157,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Button == tea.MouseButtonWheelUp {
-		m.moveSelection(-1)
+		m.scrollList(-3)
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelDown {
-		m.moveSelection(1)
+		m.scrollList(3)
 		return m, nil
 	}
 
@@ -187,22 +179,51 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.mode == modeList {
-		row := msg.Y - 2
-		kids := sortedChildren(m.current)
-		if row >= 0 && row+m.listOffset < len(kids) {
-			n := kids[row+m.listOffset]
-			m.clickNode(n)
-		}
+	listTop := 1
+	if m.mode != modeList {
+		listTop = 1 + m.treemapHeight()
+	}
+	listBottom := listTop + m.listPanelHeight()
+	if msg.Y >= listTop && msg.Y < listBottom {
+		m.clickList(msg.X, msg.Y-listTop)
 		return m, nil
 	}
 
-	t := hitTile(m.tiles, msg.X, msg.Y-1)
+	if m.mode == modeList {
+		return m, nil
+	}
+	relY := msg.Y - 1
+	if relY < 0 || relY >= m.treemapHeight() {
+		return m, nil
+	}
+	t := hitTile(m.tiles, msg.X, relY)
 	if t == nil || t.Node == nil {
 		return m, nil
 	}
 	m.clickNode(t.Node)
 	return m, nil
+}
+
+func (m *Model) clickList(x, relY int) {
+	kids := sortedChildren(m.current)
+	page := m.listPageSize()
+	if relY <= 0 {
+		return
+	}
+	if x >= m.width-1 && len(kids) > page {
+		ratio := float64(relY-1) / float64(page)
+		m.listOffset = clamp(int(ratio*float64(m.maxListOffset()+1)), 0, m.maxListOffset())
+		if m.listIndex < m.listOffset || m.listIndex >= m.listOffset+page {
+			idx := clamp(m.listOffset, 0, len(kids)-1)
+			m.listIndex = idx
+			m.selected = kids[idx]
+		}
+		return
+	}
+	row := relY - 1 + m.listOffset
+	if row >= 0 && row < len(kids) {
+		m.clickNode(kids[row])
+	}
 }
 
 func (m *Model) clickNode(n *scan.Node) {
@@ -256,15 +277,8 @@ func (m *Model) goUp() {
 	m.statusNote = ""
 }
 
-func (m *Model) navChildren() []*scan.Node {
-	if m.mode == modeList {
-		return sortedChildren(m.current)
-	}
-	return pickChildren(m.current)
-}
-
 func (m *Model) moveSelection(delta int) {
-	kids := m.navChildren()
+	kids := sortedChildren(m.current)
 	if len(kids) == 0 {
 		return
 	}
@@ -279,46 +293,30 @@ func (m *Model) moveSelection(delta int) {
 }
 
 func (m *Model) selectIndex(idx int) {
-	kids := m.navChildren()
+	kids := sortedChildren(m.current)
 	if len(kids) == 0 {
 		return
 	}
 	idx = clamp(idx, 0, len(kids)-1)
 	m.selected = kids[idx]
-	if m.mode == modeList {
-		m.listIndex = idx
-		page := pageSize(m.mapHeight())
-		if m.listIndex < m.listOffset {
-			m.listOffset = m.listIndex
-		}
-		if m.listIndex >= m.listOffset+page {
-			m.listOffset = m.listIndex - page + 1
-		}
-	}
+	m.listIndex = idx
+	m.ensureListVisible()
 }
 
 func (m *Model) syncListIndex() {
 	kids := sortedChildren(m.current)
+	target := m.selected
+	if ac := ancestorChild(m.current, m.selected); ac != nil {
+		target = ac
+	}
 	m.listIndex = 0
 	for i, c := range kids {
-		if c == m.selected {
+		if c == target {
 			m.listIndex = i
 			break
 		}
 	}
-	page := pageSize(m.mapHeight())
-	if page < 1 {
-		page = 1
-	}
-	if m.listIndex < m.listOffset {
-		m.listOffset = m.listIndex
-	}
-	if m.listIndex >= m.listOffset+page {
-		m.listOffset = m.listIndex - page + 1
-	}
-	if m.listOffset < 0 {
-		m.listOffset = 0
-	}
+	m.ensureListVisible()
 }
 
 func ancestorChild(current, target *scan.Node) *scan.Node {
@@ -337,11 +335,12 @@ func (m *Model) relayout() {
 	if !m.ready || m.current == nil {
 		return
 	}
-	w, h := m.width, m.mapHeight()
-	if w < 1 || h < 1 {
-		return
+	w, h := m.width, m.treemapHeight()
+	if w >= 1 && h >= 1 {
+		m.tiles = buildTiles(m.current, 0, 0, w, h, 0)
+	} else {
+		m.tiles = nil
 	}
-	m.tiles = buildTiles(m.current, 0, 0, w, h, 0)
 	if m.selected != nil && m.selected.Virtual {
 		for i := range m.tiles {
 			if m.tiles[i].Depth == 0 && m.tiles[i].Node != nil && m.tiles[i].Node.Virtual {
@@ -358,21 +357,6 @@ func (m *Model) relayout() {
 			m.selected = m.current
 		}
 	}
-}
-
-func (m *Model) mapHeight() int {
-	h := m.height - 4
-	if h < 1 {
-		return 1
-	}
-	return h
-}
-
-func pageSize(h int) int {
-	if h < 2 {
-		return 1
-	}
-	return h - 1
 }
 
 func (m *Model) breadcrumb(maxW int) string {

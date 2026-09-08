@@ -61,7 +61,7 @@ func (m *Model) renderHeader() string {
 }
 
 func (m *Model) renderBody() string {
-	w, h := m.width, m.mapHeight()
+	w, inner := m.width, m.innerHeight()
 	if m.current != nil && m.current.ChildCount() == 0 {
 		msg := "空目录"
 		if m.current.Scanning() {
@@ -72,105 +72,36 @@ func (m *Model) renderBody() string {
 		}
 		style := lipgloss.NewStyle().
 			Width(w).
-			Height(h).
+			Height(inner).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(lipgloss.Color(colorMuted)).
 			Background(lipgloss.Color(colorBg))
 		return style.Render(msg)
 	}
 	if m.mode == modeList {
-		return m.renderList(w, h)
+		return fitHeight(m.renderChildList(w, inner), inner, w)
 	}
+
+	mapH := m.treemapHeight()
+	listH := inner - mapH
+	var mapView string
 	if len(m.tiles) == 0 {
 		style := lipgloss.NewStyle().
 			Width(w).
-			Height(h).
+			Height(mapH).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(lipgloss.Color(colorMuted)).
 			Background(lipgloss.Color(colorBg))
 		msg := "正在计算布局…"
 		if m.current != nil && m.current.Scanning() {
-			msg = "正在扫描，矩形会随结果实时长大"
+			msg = "正在扫描，下方列表可滚动查看全部子项"
 		}
-		return style.Render(msg)
+		mapView = style.Render(msg)
+	} else {
+		mapView = renderTreemap(m.tiles, m.selected, w, mapH)
 	}
-	return renderTreemap(m.tiles, m.selected, w, h)
-}
-
-func (m *Model) renderList(w, h int) string {
-	kids := sortedChildren(m.current)
-	var b strings.Builder
-	cols := fmt.Sprintf(" %s %s %s %s %s",
-		pad("类型", 6),
-		pad("名称", max(12, w-44)),
-		pad("大小", 10),
-		pad("占比", 7),
-		"占用",
-	)
-	b.WriteString(lipgloss.NewStyle().
-		Foreground(lipgloss.Color(colorMuted)).
-		Background(lipgloss.Color(colorBg)).
-		Width(w).
-		Render(" " + truncate(cols, w-1)))
-	b.WriteByte('\n')
-
-	nameW := max(12, w-44)
-	barW := max(6, min(18, w-62))
-	page := h - 1
-	if page < 1 {
-		page = 1
-	}
-	if m.listOffset > 0 && m.listOffset >= len(kids) {
-		m.listOffset = 0
-	}
-	end := m.listOffset + page
-	if end > len(kids) {
-		end = len(kids)
-	}
-	total := int64(0)
-	if m.current != nil {
-		total = m.current.Size()
-	}
-	for i := m.listOffset; i < end; i++ {
-		n := kids[i]
-		sel := n == m.selected
-		kind := "文件"
-		if n.IsDir {
-			kind = "目录"
-		}
-		if n.Scanning() {
-			kind = "扫描"
-		}
-		line := fmt.Sprintf(" %s %s %s %s %s",
-			pad(kind, 6),
-			pad(truncate(n.Name, nameW), nameW),
-			pad(formatBytes(n.Size()), 10),
-			pad(formatPct(n.Size(), total), 7),
-			bar(n.Size(), total, barW),
-		)
-		st := lipgloss.NewStyle().Width(w).Background(lipgloss.Color(colorBg)).Foreground(lipgloss.Color(colorFg))
-		if sel {
-			st = st.Background(lipgloss.Color(colorSelect)).Foreground(lipgloss.Color(colorSelectFg)).Bold(true)
-		} else if n.IsDir {
-			st = st.Foreground(lipgloss.Color("#b8d4ff"))
-		}
-		b.WriteString(st.Render(truncate(line, w)))
-		if i < end-1 {
-			b.WriteByte('\n')
-		}
-	}
-	used := end - m.listOffset
-	if used < 1 {
-		used = 1
-		empty := lipgloss.NewStyle().Width(w).Height(page).Background(lipgloss.Color(colorBg)).Foreground(lipgloss.Color(colorMuted)).Align(lipgloss.Center, lipgloss.Center)
-		return empty.Render("没有可显示的子项")
-	}
-	if used < page {
-		padH := page - used
-		b.WriteByte('\n')
-		b.WriteString(lipgloss.NewStyle().Width(w).Height(padH).Background(lipgloss.Color(colorBg)).Render(""))
-	}
-	return b.String()
+	listView := m.renderChildList(w, listH)
+	return fitHeight(mapView, mapH, w) + "\n" + fitHeight(listView, listH, w)
 }
 
 func (m *Model) renderStatus() string {
@@ -225,11 +156,7 @@ func (m *Model) renderStatus() string {
 }
 
 func (m *Model) renderHelpLine() string {
-	mode := "树图"
-	if m.mode == modeList {
-		mode = "列表"
-	}
-	s := fmt.Sprintf(" 视图:%s   点击选中  双击/Enter进入  右键/Backspace返回  Tab切换视图  o资源管理器  ?帮助  q退出", mode)
+	s := " 滚轮/↓↑滚动子项列表  PgDn/PgUp翻页  点击选中  双击/Enter进入  Backspace返回  Tab全屏列表  ?帮助  q退出"
 	return footerStyle(m.width).Render(truncate(s, m.width))
 }
 
@@ -237,17 +164,18 @@ func overlayHelp(base string, w, h int) string {
 	lines := []string{
 		" SpaceSniffer 风格磁盘分析",
 		"",
-		" 鼠标左键          选中矩形（点到最内层文件/目录）",
+		" 鼠标滚轮 / ↓↑     滚动下方子项列表，查看一屏装不下的目录",
+		" PgDn / PgUp       列表翻页",
+		" 鼠标左键          选中矩形或列表行",
 		" 双击 / Enter      进入目录，查看其子项占用",
 		" 鼠标右键 / 退格   返回上一级",
-		" Tab               树图 ↔ 列表（按大小排序）",
-		" ↑ ↓ ← → / hjkl    在同级项目间移动",
+		" Tab               树图+列表 ↔ 全屏列表",
+		" ↑ ↓ / j k         在同级项目间移动（列表会跟着滚）",
 		" o                 在资源管理器中定位选中项",
 		" ? / Esc           关闭本帮助",
 		" q                 退出",
 		"",
-		" 矩形面积 = 占用空间。目录内部会继续嵌套子项，",
-		" 无需进入也能看到里面的大文件。",
+		" 上方矩形面积 = 占用空间；下方列表可滚动浏览全部子项。",
 	}
 	maxW := 0
 	for _, ln := range lines {
